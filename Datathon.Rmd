@@ -1,0 +1,208 @@
+---
+title: "2026 Datathon"
+author: "Richard Bustamante"
+date: "2026-02-07"
+output: html_document
+---
+
+```{r setup, message=FALSE}
+library("tidyverse")
+library("margins")
+```
+
+```{r}
+health_df <- read_delim("Access_to_Care_Dataset.csv")
+```
+
+```{r}
+group_num <- 5
+
+subgroup_avgs <- health_df %>%
+  filter(TAXONOMY == "Healthcare access and quality") %>%
+  filter(TOPIC != "Has a usual place of care among adults") %>%
+  filter(TOPIC != "Did not take medication as prescribed to save money") %>%
+  filter(SUBGROUP != "18-44 years") %>%
+  group_by(SUBGROUP, TOPIC) %>%
+  summarize(avg_estimate = mean(ESTIMATE)) %>%
+  arrange(desc(avg_estimate)) %>%
+  ungroup()
+
+top_subgroups <- subgroup_avgs %>%
+  group_by(TOPIC) %>%
+  arrange(desc(avg_estimate)) %>%
+  slice(1:group_num) %>%
+  ungroup()
+
+top_subgroups <- top_subgroups %>%
+  mutate(total_avg = recode(
+      TOPIC,
+      "Delayed getting medical care due to cost among adults" = 8.044714,
+      "Did not get needed medical care due to cost" = 7.209051,
+      "Did not get needed mental health care due to cost" = 4.961348,
+      "Did not take medication as prescribed to save money" = 8.432373,
+      "Has a usual place of care among adults" = 87.924838,
+      .default = 0
+    ))
+
+top_subgroups <- top_subgroups %>%
+  mutate(avg_estimate = unlist(avg_estimate)) %>%
+  mutate(total_avg = unlist(total_avg)) %>%
+  mutate(percent_point_diff = avg_estimate - total_avg) %>%
+  mutate(percent_diff = (percent_point_diff / total_avg) * 100)
+
+# Rename things for the visualization
+top_subgroups <- top_subgroups %>%
+  mutate(TOPIC = recode(
+      TOPIC,
+      "Delayed getting medical care due to cost among adults" = "Delayed Medical Care",
+      "Did not get needed medical care due to cost" = "Unmet Medical Care",
+      "Did not get needed mental health care due to cost" = "Unmet Mental Health Care",
+      "Did not take medication as prescribed to save money" = "Unmet Prescriptions",
+      "Has a usual place of care among adults" = "Usual Place of Care",
+      .default = TOPIC
+    ))%>%
+  mutate(SUBGROUP = recode(
+      SUBGROUP,
+      "<100% FPL" = "Earns <$32k",
+      "100% to <200% FPL" = "Earns $32k~$64k",
+      .default = SUBGROUP
+    ))
+
+top_subgroups$SUBGROUP <- factor(top_subgroups$SUBGROUP, levels = c(
+    "Bisexual",
+    "Gay or Lesbian",
+    "Living with a partner",
+    "Earns <$32k",
+    "Earns $32k~$64k",
+    "18-34 years",
+    "With disability"
+  ))
+
+top_subgroups$TOPIC <- factor(top_subgroups$TOPIC, levels = c(
+    "Delayed Medical Care",
+    "Unmet Medical Care",
+    "Unmet Mental Health Care",
+    "Unmet Prescriptions",
+    "Usual Place of Care"
+))
+
+top_subgroups %>%
+  ggplot(aes(y = percent_diff, x = TOPIC, fill=SUBGROUP)) +
+  geom_bar(stat = "identity", position = position_dodge(), col="black") +
+  labs(
+    x = "Category",
+    y = "Percent Increase",
+    title = "Increased Rates of Delayed and Unmet Care",
+    fill = "Groups"
+  ) + 
+  theme(plot.title = element_text(hjust = 0.5)) +   
+  scale_fill_brewer(palette = "PuBu")
+
+```
+
+```{r}
+total_avgs <- health_df %>%
+  filter(TAXONOMY == "Healthcare access and quality") %>%
+  filter(!is.na(ESTIMATE)) %>%
+  group_by(TOPIC) %>%
+  summarize(pop_avg_estimate = mean(ESTIMATE))
+
+total_avgs
+```
+
+```{r}
+glm_health_df <- health_df
+
+log_regression_topic <- function (topic) {
+  glm_health_df <- health_df %>%
+    filter(TAXONOMY == "Healthcare access and quality") %>%
+    filter(TOPIC == topic) %>%
+    filter(TIME_PERIOD >2018 & TIME_PERIOD <2024) %>%
+    mutate(TIME_PERIOD = TIME_PERIOD - 2019)
+  m <- glm(ESTIMATE/100 ~ TIME_PERIOD, family = quasibinomial(link = "logit"), data=glm_health_df)
+
+  years <- 0:6
+  b0 <- coef(m)["(Intercept)"]
+  b1 <- coef(m)["TIME_PERIOD"]
+  p_hat <- 1/(1 + exp(-(b0 + b1*years))) * 100
+
+  predicted_estimate <- data.frame(year = years, p_hat = p_hat)
+  return(list(model = m, predicted_estimate = predicted_estimate))
+}
+```
+
+
+```{r}
+result <- log_regression_topic(
+  "Delayed getting medical care due to cost among adults")
+
+health_df %>%
+  filter(TAXONOMY == "Healthcare access and quality") %>%
+  filter(TOPIC == "Delayed getting medical care due to cost among adults") %>%
+  filter(TIME_PERIOD >2018 & TIME_PERIOD <2024) %>%
+  ggplot(aes(factor(TIME_PERIOD),ESTIMATE)) +
+  geom_jitter(color="#555") + 
+  geom_line(size=1.2,data = result$predicted_estimate, aes(year, p_hat), col = "steelblue") +
+  labs(
+    x = "Year",
+    y = "Percent",
+    title = "Percent of Population with Delayed Access to Medical Care",
+  ) +
+  theme(plot.title = element_text(hjust = 0.5))
+
+margins(result$model) %>% summary()
+
+# With high significance (p=0.0027) each year that pass reduces the percent of
+# the population that delayed medical needs by 0.41 percentage points.
+```
+
+```{r}
+result <- log_regression_topic(
+  "Did not get needed medical care due to cost")
+
+health_df %>%
+  filter(TAXONOMY == "Healthcare access and quality") %>%
+  filter(TOPIC == "Did not get needed medical care due to cost") %>%
+  filter(TIME_PERIOD >2018 & TIME_PERIOD <2024) %>%
+  ggplot(aes(factor(TIME_PERIOD),ESTIMATE)) +
+  geom_jitter(color="#555") + 
+  geom_line(size=1.2,data = result$predicted_estimate, aes(year, p_hat), col = "#b11") +
+  labs(
+    x = "Year",
+    y = "Percent",
+    title = "Percent of Population with Unmet Medical Needs",
+  ) +
+  theme(plot.title = element_text(hjust = 0.5))
+
+margins(result$model) %>% summary()
+
+# With very high significance (p=0.0002) each year that pass reduces the percent of
+# the population that have unmet medical needs by 0.46 percentage points.
+
+```
+
+
+```{r}
+result <- log_regression_topic(
+  "Did not get needed mental health care due to cost")
+
+health_df %>%
+  filter(TAXONOMY == "Healthcare access and quality") %>%
+  filter(TOPIC == "Did not get needed medical care due to cost") %>%
+  filter(TIME_PERIOD >2018 & TIME_PERIOD <2024) %>%
+  ggplot(aes(factor(TIME_PERIOD),ESTIMATE)) +
+  geom_jitter(color="#555") + 
+  geom_line(size=1.2,data = result$predicted_estimate, aes(year, p_hat), col = "#505") +
+  labs(
+    x = "Year",
+    y = "Percent",
+    title = "Percent of Population with Unmet Mental Health Needs",
+  ) +
+  theme(plot.title = element_text(hjust = 0.5))
+
+margins(result$model) %>% summary()
+
+# With very high significance (p=0.0086) each year that pass increases the percent of
+# the population that have unmet mental health needs by 0.29 percentage points.
+
+```
